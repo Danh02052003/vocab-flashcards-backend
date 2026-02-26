@@ -36,8 +36,7 @@ app = FastAPI(title="Vocab Flashcards Backend", version="1.0.0", lifespan=lifesp
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
+        "https://vocab-flashcards-frontend.vercel.app/",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ],
