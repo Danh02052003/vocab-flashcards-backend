@@ -6,4 +6,5 @@ pydantic>=2.7.0
 python-dotenv>=1.0.1
 rapidfuzz>=3.9.0
 tzdata>=2024.1
+certifi>=2024.7.4
 certifi

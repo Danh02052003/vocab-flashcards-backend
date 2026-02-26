@@ -1,3 +1,4 @@
+import certifi
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING
 
@@ -13,7 +14,9 @@ def get_client() -> AsyncIOMotorClient:
         settings = validate_mongo_settings(get_settings())
         _client = AsyncIOMotorClient(
             settings.mongo_url,
-            serverSelectionTimeoutMS=5000,
+            tls=True,
+            tlsCAFile=certifi.where(),
+            serverSelectionTimeoutMS=20000,
             tz_aware=True,
         )
     return _client
