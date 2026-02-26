@@ -21,6 +21,7 @@ class VocabCreate(BaseModel):
     cefrLevel: CEFRLevel | None = None
     ieltsBand: float | None = Field(default=None, ge=1.0, le=9.0)
     inputMethod: Literal["typed", "pasted"] = "pasted"
+    autoFixOnValidationFail: bool = True
 
 
 class VocabUpdate(BaseModel):
@@ -54,6 +55,7 @@ class VocabUpsertWithAiRequest(BaseModel):
     cefrLevel: CEFRLevel | None = None
     ieltsBand: float | None = Field(default=None, ge=1.0, le=9.0)
     inputMethod: Literal["typed", "pasted"] = "pasted"
+    autoFixOnValidationFail: bool = True
     overwriteExisting: bool = True
     useAi: bool = True
     forceAi: bool = False

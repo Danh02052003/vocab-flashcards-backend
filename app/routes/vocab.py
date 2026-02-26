@@ -114,32 +114,86 @@ def _build_suggestions(vocab_doc: dict[str, Any] | None, cache_data: dict[str, A
     }
 
 
+def _auto_fix_from_validation(
+    *,
+    term: str,
+    meanings: list[str],
+    validation: dict[str, Any],
+) -> tuple[str, list[str], bool]:
+    result = validation.get("result") if isinstance(validation, dict) else {}
+    if not isinstance(result, dict):
+        return term.strip(), _unique_strings(meanings), False
+
+    fixed_term = str(term or "").strip()
+    fixed_meanings = _unique_strings(meanings)
+    changed = False
+
+    suggested_term = str(result.get("suggestedTerm") or "").strip()
+    if suggested_term and normalize_term(suggested_term):
+        if normalize_term(suggested_term) != normalize_term(fixed_term):
+            changed = True
+        fixed_term = suggested_term
+
+    suggested_meanings_raw = result.get("suggestedMeanings")
+    suggested_meanings = _unique_strings(suggested_meanings_raw if isinstance(suggested_meanings_raw, list) else [])
+    if suggested_meanings:
+        current_norm = {normalize_term(item) for item in fixed_meanings}
+        suggested_norm = {normalize_term(item) for item in suggested_meanings}
+        if suggested_norm != current_norm:
+            changed = True
+        fixed_meanings = suggested_meanings
+
+    return fixed_term, fixed_meanings, changed
+
+
 @router.post("", response_model=VocabOut)
 async def create_vocab(payload: VocabCreate):
     db = get_db()
     now = now_local()
-    term_normalized = normalize_term(payload.term)
+    term = payload.term.strip()
+    incoming_meanings = _unique_strings(payload.meanings)
+
+    term_normalized = normalize_term(term)
     if not term_normalized:
         raise HTTPException(status_code=422, detail="Term is empty after normalization")
 
     validation = await validate_typed_vocab_input(
-        term=payload.term,
-        meanings=payload.meanings,
+        term=term,
+        meanings=incoming_meanings,
         input_method=payload.inputMethod,
     )
     if not validation["accepted"]:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "Input looks incorrect. Please review spelling/meaning before saving.",
-                "validation": validation,
-            },
-        )
+        if payload.autoFixOnValidationFail:
+            fixed_term, fixed_meanings, changed = _auto_fix_from_validation(
+                term=term,
+                meanings=incoming_meanings,
+                validation=validation,
+            )
+            if changed:
+                re_validation = await validate_typed_vocab_input(
+                    term=fixed_term,
+                    meanings=fixed_meanings,
+                    input_method=payload.inputMethod,
+                )
+                if re_validation["accepted"]:
+                    term = fixed_term
+                    incoming_meanings = fixed_meanings
+                    validation = re_validation
+                    term_normalized = normalize_term(term)
+
+        if not validation["accepted"]:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Input looks incorrect. Please review spelling/meaning before saving.",
+                    "validation": validation,
+                },
+            )
 
     create_doc: dict[str, Any] = {
-        "term": payload.term.strip(),
+        "term": term,
         "termNormalized": term_normalized,
-        "meanings": _unique_strings(payload.meanings),
+        "meanings": incoming_meanings,
         "ipa": str(payload.ipa).strip() if payload.ipa else None,
         "exampleEn": payload.exampleEn,
         "exampleVi": payload.exampleVi,
@@ -168,7 +222,7 @@ async def create_vocab(payload: VocabCreate):
             raise HTTPException(status_code=409, detail="Duplicate term conflict")
 
         penalty = apply_readd_penalty(Sm2State.from_doc(existing), now=now)
-        merged_meanings = _merge_unique_strings(existing.get("meanings", []), payload.meanings)
+        merged_meanings = _merge_unique_strings(existing.get("meanings", []), incoming_meanings)
         merged_collocations = _merge_unique_strings(existing.get("collocations", []), payload.collocations)
         merged_phrases = _merge_unique_strings(existing.get("phrases", []), payload.phrases)
         merged_topics = _merge_unique_strings(existing.get("topics", []), payload.topics)
@@ -219,25 +273,47 @@ async def upsert_vocab_with_ai(payload: VocabUpsertWithAiRequest):
     now = now_local()
 
     term = payload.term.strip()
+    incoming_meanings = _unique_strings(payload.meanings)
     term_normalized = normalize_term(term)
     if not term_normalized:
         raise HTTPException(status_code=422, detail="Term is empty after normalization")
 
     validation = await validate_typed_vocab_input(
-        term=payload.term,
-        meanings=payload.meanings,
+        term=term,
+        meanings=incoming_meanings,
         input_method=payload.inputMethod,
     )
+    auto_fixed = False
+    auto_fix_source = {"term": term, "meanings": incoming_meanings}
     if not validation["accepted"]:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": "Input looks incorrect. Please review spelling/meaning before saving.",
-                "validation": validation,
-            },
-        )
+        if payload.autoFixOnValidationFail:
+            fixed_term, fixed_meanings, changed = _auto_fix_from_validation(
+                term=term,
+                meanings=incoming_meanings,
+                validation=validation,
+            )
+            if changed:
+                re_validation = await validate_typed_vocab_input(
+                    term=fixed_term,
+                    meanings=fixed_meanings,
+                    input_method=payload.inputMethod,
+                )
+                if re_validation["accepted"]:
+                    term = fixed_term
+                    incoming_meanings = fixed_meanings
+                    validation = re_validation
+                    auto_fixed = True
+                    term_normalized = normalize_term(term)
 
-    incoming_meanings = _unique_strings(payload.meanings)
+        if not validation["accepted"]:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Input looks incorrect. Please review spelling/meaning before saving.",
+                    "validation": validation,
+                },
+            )
+
     incoming_tags = _unique_strings(payload.tags)
     incoming_ipa = str(payload.ipa).strip() if payload.ipa else None
     incoming_collocations = _unique_strings(payload.collocations)
@@ -387,7 +463,21 @@ async def upsert_vocab_with_ai(payload: VocabUpsertWithAiRequest):
         vocab_doc = await db.vocabs.find_one({"_id": existing["_id"]})
         action = "updated"
 
-    ai_info = {"enabled": payload.useAi, "provider": None, "aiCalled": False, "fromCache": False}
+    ai_info = {
+        "enabled": payload.useAi,
+        "provider": None,
+        "aiCalled": False,
+        "fromCache": False,
+        "validation": {
+            "checked": bool(validation.get("checked", False)),
+            "accepted": bool(validation.get("accepted", True)),
+            "provider": validation.get("provider"),
+            "fromCache": bool(validation.get("fromCache", False)),
+            "autoFixed": auto_fixed,
+            "inputBeforeFix": auto_fix_source if auto_fixed else None,
+            "result": validation.get("result", {}),
+        },
+    }
     suggestions: dict[str, Any] = {
         "examples": [],
         "mnemonics": [],
