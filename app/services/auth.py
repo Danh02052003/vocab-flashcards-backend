@@ -1,5 +1,6 @@
 import hashlib
 import secrets
+from datetime import timedelta
 from typing import Any
 
 from bson import ObjectId
@@ -10,6 +11,8 @@ from app.utils.time import now_local
 
 PBKDF2_ITERATIONS = 200_000
 SESSION_TOKEN_BYTES = 32
+RESET_CODE_BYTES = 3
+RESET_CODE_TTL_MINUTES = 15
 
 
 def normalize_email(email: str) -> str:
@@ -36,6 +39,10 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def generate_reset_code() -> str:
+    return secrets.token_hex(RESET_CODE_BYTES).upper()
+
+
 async def create_session_token(user_id: ObjectId) -> str:
     db = get_db()
     raw_token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
@@ -47,6 +54,10 @@ async def create_session_token(user_id: ObjectId) -> str:
         }
     )
     return raw_token
+
+
+def reset_code_expiry():
+    return now_local() + timedelta(minutes=RESET_CODE_TTL_MINUTES)
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -92,4 +103,3 @@ async def migrate_legacy_data_to_user(user_id: ObjectId) -> None:
     await db.topic_packs.update_many(legacy_filter, {"$set": {"userId": user_id}})
     await db.writing_errors.update_many(legacy_filter, {"$set": {"userId": user_id}})
     await db.events.update_many(legacy_filter, {"$set": {"userId": user_id}})
-
