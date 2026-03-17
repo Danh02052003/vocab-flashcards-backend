@@ -65,6 +65,7 @@ cp .env.example .env
 - `MONGO_DB`: database name (default: `vocab_app`).
 - `OPENAI_API_KEY`: optional. Leave empty to use stub provider.
 - `TZ`: keep `Asia/Ho_Chi_Minh` for expected session boundaries.
+- `CORS_ORIGINS`: optional comma-separated list of extra frontend origins (for example `https://your-app.vercel.app,https://staging.example.com`).
 
 ## Install
 

@@ -7,6 +7,7 @@ from pymongo.errors import DuplicateKeyError
 from app.db import get_db
 from app.models.pack import TopicPackAddVocabRequest, TopicPackCreate, TopicPackOut
 from app.models.vocab import vocab_doc_to_out
+from app.services.auth import CurrentUser
 from app.utils.time import now_local
 
 router = APIRouter(prefix="/packs", tags=["packs"])
@@ -37,7 +38,7 @@ def _to_out(doc: dict[str, Any]) -> TopicPackOut:
 
 
 @router.post("", response_model=TopicPackOut)
-async def create_pack(payload: TopicPackCreate):
+async def create_pack(payload: TopicPackCreate, current_user=CurrentUser):
     db = get_db()
     now = now_local()
 
@@ -45,11 +46,12 @@ async def create_pack(payload: TopicPackCreate):
     for item in payload.vocabIds:
         if not ObjectId.is_valid(item):
             raise HTTPException(status_code=400, detail=f"Invalid vocabId: {item}")
-        exists = await db.vocabs.find_one({"_id": ObjectId(item)}, {"_id": 1})
+        exists = await db.vocabs.find_one({"_id": ObjectId(item), "userId": current_user["_id"]}, {"_id": 1})
         if exists:
             vocab_ids.append(item)
 
     doc = {
+        "userId": current_user["_id"],
         "name": payload.name.strip(),
         "description": payload.description,
         "topics": _unique_strings(payload.topics),
@@ -67,56 +69,56 @@ async def create_pack(payload: TopicPackCreate):
 
 
 @router.get("", response_model=list[TopicPackOut])
-async def list_packs(page: int = Query(default=1, ge=1), limit: int = Query(default=20, ge=1, le=200)):
+async def list_packs(page: int = Query(default=1, ge=1), limit: int = Query(default=20, ge=1, le=200), current_user=CurrentUser):
     db = get_db()
     skip = (page - 1) * limit
-    docs = await db.topic_packs.find({}).sort("updatedAt", -1).skip(skip).limit(limit).to_list(length=limit)
+    docs = await db.topic_packs.find({"userId": current_user["_id"]}).sort("updatedAt", -1).skip(skip).limit(limit).to_list(length=limit)
     return [_to_out(doc) for doc in docs]
 
 
 @router.get("/{pack_id}", response_model=TopicPackOut)
-async def get_pack(pack_id: str):
+async def get_pack(pack_id: str, current_user=CurrentUser):
     if not ObjectId.is_valid(pack_id):
         raise HTTPException(status_code=400, detail="Invalid ObjectId")
     db = get_db()
-    doc = await db.topic_packs.find_one({"_id": ObjectId(pack_id)})
+    doc = await db.topic_packs.find_one({"_id": ObjectId(pack_id), "userId": current_user["_id"]})
     if not doc:
         raise HTTPException(status_code=404, detail="Pack not found")
     return _to_out(doc)
 
 
 @router.post("/{pack_id}/add_vocab", response_model=TopicPackOut)
-async def add_vocab_to_pack(pack_id: str, payload: TopicPackAddVocabRequest):
+async def add_vocab_to_pack(pack_id: str, payload: TopicPackAddVocabRequest, current_user=CurrentUser):
     if not ObjectId.is_valid(pack_id):
         raise HTTPException(status_code=400, detail="Invalid ObjectId")
     if not ObjectId.is_valid(payload.vocabId):
         raise HTTPException(status_code=400, detail="Invalid vocabId")
 
     db = get_db()
-    pack = await db.topic_packs.find_one({"_id": ObjectId(pack_id)})
+    pack = await db.topic_packs.find_one({"_id": ObjectId(pack_id), "userId": current_user["_id"]})
     if not pack:
         raise HTTPException(status_code=404, detail="Pack not found")
 
-    vocab = await db.vocabs.find_one({"_id": ObjectId(payload.vocabId)}, {"_id": 1})
+    vocab = await db.vocabs.find_one({"_id": ObjectId(payload.vocabId), "userId": current_user["_id"]}, {"_id": 1})
     if not vocab:
         raise HTTPException(status_code=404, detail="Vocab not found")
 
     updated_ids = _unique_strings((pack.get("vocabIds") or []) + [payload.vocabId])
     await db.topic_packs.update_one(
-        {"_id": pack["_id"]},
+        {"_id": pack["_id"], "userId": current_user["_id"]},
         {"$set": {"vocabIds": updated_ids, "updatedAt": now_local()}},
     )
-    updated = await db.topic_packs.find_one({"_id": pack["_id"]})
+    updated = await db.topic_packs.find_one({"_id": pack["_id"], "userId": current_user["_id"]})
     return _to_out(updated)
 
 
 @router.get("/{pack_id}/session")
-async def get_pack_session(pack_id: str, limit: int = Query(default=20, ge=1, le=100)):
+async def get_pack_session(pack_id: str, limit: int = Query(default=20, ge=1, le=100), current_user=CurrentUser):
     if not ObjectId.is_valid(pack_id):
         raise HTTPException(status_code=400, detail="Invalid ObjectId")
 
     db = get_db()
-    pack = await db.topic_packs.find_one({"_id": ObjectId(pack_id)})
+    pack = await db.topic_packs.find_one({"_id": ObjectId(pack_id), "userId": current_user["_id"]})
     if not pack:
         raise HTTPException(status_code=404, detail="Pack not found")
 
@@ -124,7 +126,7 @@ async def get_pack_session(pack_id: str, limit: int = Query(default=20, ge=1, le
     if not vocab_ids:
         return {"pack": _to_out(pack).model_dump(), "vocabs": []}
 
-    vocabs = await db.vocabs.find({"_id": {"$in": vocab_ids}}).sort("dueAt", 1).limit(limit).to_list(length=limit)
+    vocabs = await db.vocabs.find({"_id": {"$in": vocab_ids}, "userId": current_user["_id"]}).sort("dueAt", 1).limit(limit).to_list(length=limit)
     return {
         "pack": _to_out(pack).model_dump(),
         "vocabs": [vocab_doc_to_out(v).model_dump() for v in vocabs],

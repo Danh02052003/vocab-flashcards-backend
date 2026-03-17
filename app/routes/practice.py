@@ -15,6 +15,7 @@ from app.models.practice import (
     SpeakingFeedbackResponse,
 )
 from app.services.ai_provider import StubAiProvider, get_ai_provider
+from app.services.auth import CurrentUser
 from app.services.typing_judge import is_near_correct
 from app.utils.time import now_local
 
@@ -37,9 +38,9 @@ def _build_cloze_question(term: str, example: str | None, meaning: str | None) -
 
 
 @router.post("/cloze/generate", response_model=ClozeGenerateResponse)
-async def generate_cloze(payload: ClozeGenerateRequest):
+async def generate_cloze(payload: ClozeGenerateRequest, current_user=CurrentUser):
     db = get_db()
-    query: dict[str, Any] = {}
+    query: dict[str, Any] = {"userId": current_user["_id"]}
 
     if payload.vocabIds:
         oids = [_parse_object_id(v) for v in payload.vocabIds]
@@ -49,7 +50,7 @@ async def generate_cloze(payload: ClozeGenerateRequest):
 
     docs = await db.vocabs.find(query).sort("updatedAt", -1).limit(payload.limit).to_list(length=payload.limit)
     if not docs:
-        docs = await db.vocabs.find({}).sort("dueAt", 1).limit(payload.limit).to_list(length=payload.limit)
+        docs = await db.vocabs.find({"userId": current_user["_id"]}).sort("dueAt", 1).limit(payload.limit).to_list(length=payload.limit)
 
     items: list[ClozeItem] = []
     for doc in docs:
@@ -73,10 +74,10 @@ async def generate_cloze(payload: ClozeGenerateRequest):
 
 
 @router.post("/cloze/submit", response_model=ClozeSubmitResponse)
-async def submit_cloze(payload: ClozeSubmitRequest):
+async def submit_cloze(payload: ClozeSubmitRequest, current_user=CurrentUser):
     db = get_db()
     oid = _parse_object_id(payload.vocabId)
-    vocab = await db.vocabs.find_one({"_id": oid})
+    vocab = await db.vocabs.find_one({"_id": oid, "userId": current_user["_id"]})
     if not vocab:
         raise HTTPException(status_code=404, detail="Vocab not found")
 
@@ -87,6 +88,7 @@ async def submit_cloze(payload: ClozeSubmitRequest):
 
     await db.practice_logs.insert_one(
         {
+            "userId": current_user["_id"],
             "type": "cloze_submit",
             "vocabId": oid,
             "correct": bool(exact),
@@ -100,7 +102,7 @@ async def submit_cloze(payload: ClozeSubmitRequest):
 
 
 @router.post("/speaking_feedback", response_model=SpeakingFeedbackResponse)
-async def speaking_feedback(payload: SpeakingFeedbackRequest):
+async def speaking_feedback(payload: SpeakingFeedbackRequest, current_user=CurrentUser):
     provider = get_ai_provider()
     provider_used = provider.provider_name
     try:
@@ -122,6 +124,7 @@ async def speaking_feedback(payload: SpeakingFeedbackRequest):
     db = get_db()
     await db.practice_logs.insert_one(
         {
+            "userId": current_user["_id"],
             "type": "speaking_feedback",
             "prompt": payload.prompt,
             "responseText": payload.responseText,

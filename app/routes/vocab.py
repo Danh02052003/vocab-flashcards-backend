@@ -15,6 +15,7 @@ from app.models.vocab import (
     vocab_doc_to_out,
 )
 from app.services.ai_cache import CACHE_VERSION, get_cache, merge_ai_data, upsert_cache
+from app.services.auth import CurrentUser
 from app.services.ai_provider import EnrichMissing, StubAiProvider, get_ai_provider
 from app.services.srs_sm2 import Sm2State, apply_readd_penalty, initial_state
 from app.services.vocab_guard import validate_typed_vocab_input
@@ -147,7 +148,7 @@ def _auto_fix_from_validation(
 
 
 @router.post("", response_model=VocabOut)
-async def create_vocab(payload: VocabCreate):
+async def create_vocab(payload: VocabCreate, current_user=CurrentUser):
     db = get_db()
     now = now_local()
     term = payload.term.strip()
@@ -191,6 +192,7 @@ async def create_vocab(payload: VocabCreate):
             )
 
     create_doc: dict[str, Any] = {
+        "userId": current_user["_id"],
         "term": term,
         "termNormalized": term_normalized,
         "meanings": incoming_meanings,
@@ -214,10 +216,10 @@ async def create_vocab(payload: VocabCreate):
 
     try:
         result = await db.vocabs.insert_one(create_doc)
-        doc = await db.vocabs.find_one({"_id": result.inserted_id})
+        doc = await db.vocabs.find_one({"_id": result.inserted_id, "userId": current_user["_id"]})
         return vocab_doc_to_out(doc)
     except DuplicateKeyError:
-        existing = await db.vocabs.find_one({"termNormalized": term_normalized})
+        existing = await db.vocabs.find_one({"termNormalized": term_normalized, "userId": current_user["_id"]})
         if not existing:
             raise HTTPException(status_code=409, detail="Duplicate term conflict")
 
@@ -254,6 +256,7 @@ async def create_vocab(payload: VocabCreate):
 
         await db.events.insert_one(
             {
+                "userId": current_user["_id"],
                 "type": "RE_ADD",
                 "payload": {
                     "vocabId": str(existing["_id"]),
@@ -263,12 +266,12 @@ async def create_vocab(payload: VocabCreate):
             }
         )
 
-        updated = await db.vocabs.find_one({"_id": existing["_id"]})
+        updated = await db.vocabs.find_one({"_id": existing["_id"], "userId": current_user["_id"]})
         return vocab_doc_to_out(updated)
 
 
 @router.post("/upsert_with_ai", response_model=VocabUpsertWithAiOut)
-async def upsert_vocab_with_ai(payload: VocabUpsertWithAiRequest):
+async def upsert_vocab_with_ai(payload: VocabUpsertWithAiRequest, current_user=CurrentUser):
     db = get_db()
     now = now_local()
 
@@ -321,11 +324,12 @@ async def upsert_vocab_with_ai(payload: VocabUpsertWithAiRequest):
     incoming_topics = _unique_strings(payload.topics)
     incoming_word_family = _normalize_word_family(payload.wordFamily)
 
-    existing = await db.vocabs.find_one({"termNormalized": term_normalized})
+    existing = await db.vocabs.find_one({"termNormalized": term_normalized, "userId": current_user["_id"]})
     overwritten = False
 
     if not existing:
         create_doc: dict[str, Any] = {
+            "userId": current_user["_id"],
             "term": term,
             "termNormalized": term_normalized,
             "meanings": incoming_meanings,
@@ -347,7 +351,7 @@ async def upsert_vocab_with_ai(payload: VocabUpsertWithAiRequest):
             **initial_state(now),
         }
         result = await db.vocabs.insert_one(create_doc)
-        vocab_doc = await db.vocabs.find_one({"_id": result.inserted_id})
+        vocab_doc = await db.vocabs.find_one({"_id": result.inserted_id, "userId": current_user["_id"]})
         action = "created"
     else:
         update_doc: dict[str, Any] = {"updatedAt": now, "term": term}
@@ -459,8 +463,8 @@ async def upsert_vocab_with_ai(payload: VocabUpsertWithAiRequest):
                 has_changes = True
 
         if has_changes:
-            await db.vocabs.update_one({"_id": existing["_id"]}, {"$set": update_doc})
-        vocab_doc = await db.vocabs.find_one({"_id": existing["_id"]})
+            await db.vocabs.update_one({"_id": existing["_id"], "userId": current_user["_id"]}, {"$set": update_doc})
+        vocab_doc = await db.vocabs.find_one({"_id": existing["_id"], "userId": current_user["_id"]})
         action = "updated"
 
     ai_info = {
@@ -559,8 +563,8 @@ async def upsert_vocab_with_ai(payload: VocabUpsertWithAiRequest):
 
         if ai_update_doc:
             ai_update_doc["updatedAt"] = now
-            await db.vocabs.update_one({"_id": vocab_doc["_id"]}, {"$set": ai_update_doc})
-            vocab_doc = await db.vocabs.find_one({"_id": vocab_doc["_id"]})
+            await db.vocabs.update_one({"_id": vocab_doc["_id"], "userId": current_user["_id"]}, {"$set": ai_update_doc})
+            vocab_doc = await db.vocabs.find_one({"_id": vocab_doc["_id"], "userId": current_user["_id"]})
 
         suggestions = _build_suggestions(vocab_doc, merged_cache_data)
         ai_info["provider"] = provider_used
@@ -585,9 +589,10 @@ async def list_vocab(
     cefrLevel: str | None = None,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=200),
+    current_user=CurrentUser,
 ):
     db = get_db()
-    query: dict[str, Any] = {}
+    query: dict[str, Any] = {"userId": current_user["_id"]}
 
     if search:
         pattern = re.escape(search.strip())
@@ -614,20 +619,20 @@ async def list_vocab(
 
 
 @router.get("/{vocab_id}", response_model=VocabOut)
-async def get_vocab(vocab_id: str):
+async def get_vocab(vocab_id: str, current_user=CurrentUser):
     db = get_db()
     oid = _parse_object_id(vocab_id)
-    doc = await db.vocabs.find_one({"_id": oid})
+    doc = await db.vocabs.find_one({"_id": oid, "userId": current_user["_id"]})
     if not doc:
         raise HTTPException(status_code=404, detail="Vocab not found")
     return vocab_doc_to_out(doc)
 
 
 @router.put("/{vocab_id}", response_model=VocabOut)
-async def update_vocab(vocab_id: str, payload: VocabUpdate):
+async def update_vocab(vocab_id: str, payload: VocabUpdate, current_user=CurrentUser):
     db = get_db()
     oid = _parse_object_id(vocab_id)
-    existing = await db.vocabs.find_one({"_id": oid})
+    existing = await db.vocabs.find_one({"_id": oid, "userId": current_user["_id"]})
     if not existing:
         raise HTTPException(status_code=404, detail="Vocab not found")
 
@@ -665,21 +670,21 @@ async def update_vocab(vocab_id: str, payload: VocabUpdate):
     update_doc["updatedAt"] = now_local()
 
     try:
-        await db.vocabs.update_one({"_id": oid}, {"$set": update_doc})
+        await db.vocabs.update_one({"_id": oid, "userId": current_user["_id"]}, {"$set": update_doc})
     except DuplicateKeyError:
         raise HTTPException(status_code=409, detail="Another vocab already uses this term")
 
-    updated = await db.vocabs.find_one({"_id": oid})
+    updated = await db.vocabs.find_one({"_id": oid, "userId": current_user["_id"]})
     return vocab_doc_to_out(updated)
 
 
 @router.delete("/{vocab_id}")
-async def delete_vocab(vocab_id: str):
+async def delete_vocab(vocab_id: str, current_user=CurrentUser):
     db = get_db()
     oid = _parse_object_id(vocab_id)
-    delete_result = await db.vocabs.delete_one({"_id": oid})
+    delete_result = await db.vocabs.delete_one({"_id": oid, "userId": current_user["_id"]})
     if delete_result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Vocab not found")
 
-    await db.review_logs.delete_many({"vocabId": oid})
+    await db.review_logs.delete_many({"vocabId": oid, "userId": current_user["_id"]})
     return {"deleted": True}

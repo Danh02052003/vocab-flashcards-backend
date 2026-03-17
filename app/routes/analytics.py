@@ -6,21 +6,22 @@ from fastapi import APIRouter, Query
 
 from app.db import get_db
 from app.models.analytics import AnalyticsOverview, TopicStat
+from app.services.auth import CurrentUser
 from app.utils.time import now_local
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
 @router.get("/overview", response_model=AnalyticsOverview)
-async def analytics_overview(days: int = Query(default=30, ge=1, le=365)):
+async def analytics_overview(days: int = Query(default=30, ge=1, le=365), current_user=CurrentUser):
     db = get_db()
     now = now_local()
     start = now - timedelta(days=days)
 
-    total_vocabs = await db.vocabs.count_documents({})
-    due_now = await db.vocabs.count_documents({"dueAt": {"$lte": now}})
+    total_vocabs = await db.vocabs.count_documents({"userId": current_user["_id"]})
+    due_now = await db.vocabs.count_documents({"userId": current_user["_id"], "dueAt": {"$lte": now}})
 
-    logs = await db.review_logs.find({"createdAt": {"$gte": start}}).to_list(length=None)
+    logs = await db.review_logs.find({"userId": current_user["_id"], "createdAt": {"$gte": start}}).to_list(length=None)
     reviewed_count = len(logs)
     avg_grade = round(sum(int(log.get("grade", 0)) for log in logs) / reviewed_count, 2) if reviewed_count else 0.0
     accuracy_rate = (
@@ -46,12 +47,12 @@ async def analytics_overview(days: int = Query(default=30, ge=1, le=365)):
 
 
 @router.get("/topics", response_model=list[TopicStat])
-async def analytics_topics(days: int = Query(default=30, ge=1, le=365)):
+async def analytics_topics(days: int = Query(default=30, ge=1, le=365), current_user=CurrentUser):
     db = get_db()
     now = now_local()
     start = now - timedelta(days=days)
 
-    vocab_docs = await db.vocabs.find({}, {"topics": 1}).to_list(length=None)
+    vocab_docs = await db.vocabs.find({"userId": current_user["_id"]}, {"topics": 1}).to_list(length=None)
     vocab_topics: dict[str, list[str]] = {}
     topic_vocab_count: defaultdict[str, int] = defaultdict(int)
 
@@ -61,7 +62,7 @@ async def analytics_topics(days: int = Query(default=30, ge=1, le=365)):
         for topic in topics:
             topic_vocab_count[topic] += 1
 
-    logs = await db.review_logs.find({"createdAt": {"$gte": start}}).to_list(length=None)
+    logs = await db.review_logs.find({"userId": current_user["_id"], "createdAt": {"$gte": start}}).to_list(length=None)
     topic_review_count: defaultdict[str, int] = defaultdict(int)
     topic_grade_sum: defaultdict[str, int] = defaultdict(int)
 

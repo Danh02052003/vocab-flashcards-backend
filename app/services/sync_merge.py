@@ -107,21 +107,22 @@ def _safe_max_datetime(left: datetime | None, right: datetime | None) -> datetim
     return max(left, right)
 
 
-async def export_payload() -> dict[str, Any]:
+async def export_payload(user_id: ObjectId) -> dict[str, Any]:
     db = get_db()
     now = now_local()
 
     await db.events.insert_one(
         {
+            "userId": user_id,
             "type": "EXPORT",
             "payload": {"schemaVersion": "v1"},
             "createdAt": now,
         }
     )
 
-    vocabs = await db.vocabs.find({}).sort([("termNormalized", 1), ("createdAt", 1)]).to_list(length=None)
-    review_logs = await db.review_logs.find({}).sort([("createdAt", 1)]).to_list(length=None)
-    events = await db.events.find({}).sort([("createdAt", 1)]).to_list(length=None)
+    vocabs = await db.vocabs.find({"userId": user_id}).sort([("termNormalized", 1), ("createdAt", 1)]).to_list(length=None)
+    review_logs = await db.review_logs.find({"userId": user_id}).sort([("createdAt", 1)]).to_list(length=None)
+    events = await db.events.find({"userId": user_id}).sort([("createdAt", 1)]).to_list(length=None)
 
     return {
         "schemaVersion": "v1",
@@ -132,7 +133,7 @@ async def export_payload() -> dict[str, Any]:
     }
 
 
-async def import_payload(payload: dict[str, Any]) -> dict[str, int]:
+async def import_payload(payload: dict[str, Any], user_id: ObjectId) -> dict[str, int]:
     db = get_db()
     now = now_local()
 
@@ -172,6 +173,7 @@ async def import_payload(payload: dict[str, Any]) -> dict[str, int]:
             "topics": _merge_unique_strings(incoming.get("topics") or [], []),
             "cefrLevel": incoming.get("cefrLevel"),
             "ieltsBand": float(incoming.get("ieltsBand")) if incoming.get("ieltsBand") is not None else None,
+            "userId": user_id,
             "createdAt": incoming_created,
             "updatedAt": incoming_updated,
             "easeFactor": float(incoming.get("easeFactor", 2.5)),
@@ -188,7 +190,7 @@ async def import_payload(payload: dict[str, Any]) -> dict[str, int]:
             else None,
         }
 
-        existing = await db.vocabs.find_one({"termNormalized": term_norm})
+        existing = await db.vocabs.find_one({"termNormalized": term_norm, "userId": user_id})
         if not existing:
             result = await db.vocabs.insert_one(incoming_doc)
             source_vocab_to_local[source_vocab_id] = result.inserted_id
@@ -238,11 +240,11 @@ async def import_payload(payload: dict[str, Any]) -> dict[str, int]:
         existing_serialized = _serialize_doc({k: v for k, v in existing.items() if k != "_id"})
         merged_serialized = _serialize_doc({k: v for k, v in merged.items() if k != "_id"})
         if stable_hash(existing_serialized) != stable_hash(merged_serialized):
-            await db.vocabs.update_one({"_id": existing["_id"]}, {"$set": {k: v for k, v in merged.items() if k != "_id"}})
+            await db.vocabs.update_one({"_id": existing["_id"], "userId": user_id}, {"$set": {k: v for k, v in merged.items() if k != "_id"}})
             updated_vocabs += 1
 
     existing_hashes: set[str] = set()
-    existing_logs = await db.review_logs.find({}, {"vocabId": 1, "createdAt": 1, "grade": 1, "mode": 1, "questionType": 1}).to_list(length=None)
+    existing_logs = await db.review_logs.find({"userId": user_id}, {"vocabId": 1, "createdAt": 1, "grade": 1, "mode": 1, "questionType": 1}).to_list(length=None)
     for log in existing_logs:
         existing_hashes.add(_log_dedup_hash(log))
 
@@ -256,7 +258,7 @@ async def import_payload(payload: dict[str, Any]) -> dict[str, int]:
 
         if local_vocab_id is None and ObjectId.is_valid(source_vocab_id):
             candidate = ObjectId(source_vocab_id)
-            exists = await db.vocabs.find_one({"_id": candidate}, {"_id": 1})
+            exists = await db.vocabs.find_one({"_id": candidate, "userId": user_id}, {"_id": 1})
             if exists:
                 local_vocab_id = candidate
 
@@ -265,6 +267,7 @@ async def import_payload(payload: dict[str, Any]) -> dict[str, int]:
 
         normalized_log = {
             "vocabId": local_vocab_id,
+            "userId": user_id,
             "mode": str(incoming_log.get("mode") or "flip"),
             "questionType": str(incoming_log.get("questionType") or "term_to_meaning"),
             "grade": int(incoming_log.get("grade", 0)),
@@ -290,6 +293,7 @@ async def import_payload(payload: dict[str, Any]) -> dict[str, int]:
         event_docs.append(
             {
                 "type": str(incoming_event.get("type") or "IMPORT"),
+                "userId": user_id,
                 "payload": incoming_event.get("payload") or {},
                 "createdAt": _parse_datetime(incoming_event.get("createdAt"), now),
             }
@@ -307,6 +311,7 @@ async def import_payload(payload: dict[str, Any]) -> dict[str, int]:
 
     await db.events.insert_one(
         {
+            "userId": user_id,
             "type": "IMPORT",
             "payload": {
                 **report,

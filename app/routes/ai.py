@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.db import get_db
 from app.models.vocab import vocab_doc_to_out
 from app.services.ai_cache import CACHE_VERSION, get_cache, merge_ai_data, upsert_cache
+from app.services.auth import CurrentUser
 from app.services.ai_provider import EnrichMissing, StubAiProvider, get_ai_provider
 from app.services.typing_judge import is_near_correct
 from app.utils.hash import stable_hash
@@ -63,7 +64,7 @@ def _extract_examples(vocab_doc: dict[str, Any] | None, cache_data: dict[str, An
     return examples
 
 
-async def _learn_equivalent_answer(*, term_normalized: str, user_answer: str, provider: str) -> None:
+async def _learn_equivalent_answer(*, term_normalized: str, user_answer: str, provider: str, user_id) -> None:
     raw_answer = str(user_answer or "").strip()
     normalized_answer = normalize_term(raw_answer)
     if not normalized_answer:
@@ -72,13 +73,13 @@ async def _learn_equivalent_answer(*, term_normalized: str, user_answer: str, pr
     db = get_db()
     now = now_local()
 
-    vocab = await db.vocabs.find_one({"termNormalized": term_normalized})
+    vocab = await db.vocabs.find_one({"termNormalized": term_normalized, "userId": user_id})
     if vocab:
         existing_meanings = _unique_strings(vocab.get("meanings", []))
         existing_normalized = {normalize_term(item) for item in existing_meanings}
         if normalized_answer not in existing_normalized:
             await db.vocabs.update_one(
-                {"_id": vocab["_id"]},
+                {"_id": vocab["_id"], "userId": user_id},
                 {
                     "$set": {
                         "meanings": existing_meanings + [raw_answer],
@@ -105,7 +106,7 @@ async def _learn_equivalent_answer(*, term_normalized: str, user_answer: str, pr
 
 
 @router.post("/enrich")
-async def enrich_vocab(payload: EnrichRequest):
+async def enrich_vocab(payload: EnrichRequest, current_user=CurrentUser):
     db = get_db()
     now = now_local()
 
@@ -113,7 +114,7 @@ async def enrich_vocab(payload: EnrichRequest):
     if not term_normalized:
         raise HTTPException(status_code=422, detail="Term is empty after normalization")
 
-    vocab = await db.vocabs.find_one({"termNormalized": term_normalized})
+    vocab = await db.vocabs.find_one({"termNormalized": term_normalized, "userId": current_user["_id"]})
 
     cache_key = f"enrich:{CACHE_VERSION}:{term_normalized}"
     cache_doc = await get_cache(cache_key)
@@ -188,8 +189,8 @@ async def enrich_vocab(payload: EnrichRequest):
 
         if update_doc:
             update_doc["updatedAt"] = now
-            await db.vocabs.update_one({"_id": vocab["_id"]}, {"$set": update_doc})
-            updated_vocab = await db.vocabs.find_one({"_id": vocab["_id"]})
+            await db.vocabs.update_one({"_id": vocab["_id"], "userId": current_user["_id"]}, {"$set": update_doc})
+            updated_vocab = await db.vocabs.find_one({"_id": vocab["_id"], "userId": current_user["_id"]})
 
     response_data = {
         "examples": _extract_examples(updated_vocab or vocab, merged_data),
@@ -215,7 +216,7 @@ async def enrich_vocab(payload: EnrichRequest):
 
 
 @router.post("/judge_equivalence")
-async def judge_equivalence(payload: JudgeRequest):
+async def judge_equivalence(payload: JudgeRequest, current_user=CurrentUser):
     term_normalized = normalize_term(payload.term)
     if not term_normalized:
         raise HTTPException(status_code=422, detail="Term is empty after normalization")
@@ -241,6 +242,7 @@ async def judge_equivalence(payload: JudgeRequest):
             term_normalized=term_normalized,
             user_answer=payload.userAnswer,
             provider="fuzzy",
+            user_id=current_user["_id"],
         )
         return {
             "isEquivalent": True,
@@ -257,6 +259,7 @@ async def judge_equivalence(payload: JudgeRequest):
                 term_normalized=term_normalized,
                 user_answer=payload.userAnswer,
                 provider=str(cache_doc.get("provider", "stub")),
+                user_id=current_user["_id"],
             )
         return {
             "isEquivalent": bool(judge_data.get("isEquivalent", False)),
@@ -295,6 +298,7 @@ async def judge_equivalence(payload: JudgeRequest):
             term_normalized=term_normalized,
             user_answer=payload.userAnswer,
             provider=provider_used,
+            user_id=current_user["_id"],
         )
 
     return {

@@ -12,30 +12,32 @@ def _to_output(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [vocab_doc_to_out(doc).model_dump() for doc in docs]
 
 
-async def get_today_session(limit: int = 30) -> dict[str, list[dict[str, Any]]]:
+async def get_today_session(user_id: ObjectId, limit: int = 30) -> dict[str, list[dict[str, Any]]]:
     db = get_db()
     now = now_local()
     today_start, today_end = today_bounds()
     y_start, y_end = yesterday_bounds()
 
-    today_new_docs = await db.vocabs.find({"createdAt": {"$gte": today_start, "$lt": today_end}}).sort("createdAt", 1).to_list(length=None)
+    today_new_docs = await db.vocabs.find({"userId": user_id, "createdAt": {"$gte": today_start, "$lt": today_end}}).sort("createdAt", 1).to_list(length=None)
     today_ids = {doc["_id"] for doc in today_new_docs}
 
     due_docs = await db.vocabs.find(
         {
             "dueAt": {"$lte": now},
+            "userId": user_id,
             "_id": {"$nin": list(today_ids)},
         }
     ).sort("dueAt", 1).limit(limit).to_list(length=limit)
 
     low_grade_ids_raw = await db.review_logs.distinct(
         "vocabId",
-        {"createdAt": {"$gte": y_start, "$lt": y_end}, "grade": {"$lt": 3}},
+        {"userId": user_id, "createdAt": {"$gte": y_start, "$lt": y_end}, "grade": {"$lt": 3}},
     )
     low_grade_ids: list[ObjectId] = [item for item in low_grade_ids_raw if isinstance(item, ObjectId)]
 
     yesterday_not_mastered_query: dict[str, Any] = {
         "lastReviewedAt": {"$gte": y_start, "$lt": y_end},
+        "userId": user_id,
         "_id": {"$nin": list(today_ids)},
         "$or": [
             {"_id": {"$in": low_grade_ids}},
@@ -54,6 +56,7 @@ async def get_today_session(limit: int = 30) -> dict[str, list[dict[str, Any]]]:
     struggle_docs = await db.vocabs.find(
         {
             "readdCount": {"$gt": 0},
+            "userId": user_id,
             "_id": {"$nin": list(today_ids)},
         }
     ).sort([("readdCount", -1), ("dueAt", 1)]).limit(limit).to_list(length=limit)

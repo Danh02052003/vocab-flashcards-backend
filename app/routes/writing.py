@@ -10,6 +10,7 @@ from app.models.writing import (
     WritingErrorCreate,
     WritingErrorOut,
 )
+from app.services.auth import CurrentUser
 from app.utils.hash import stable_hash
 from app.utils.time import now_local
 
@@ -31,7 +32,7 @@ def _to_out(doc: dict[str, Any]) -> WritingErrorOut:
 
 
 @router.post("/error-bank", response_model=WritingErrorOut)
-async def add_writing_error(payload: WritingErrorCreate):
+async def add_writing_error(payload: WritingErrorCreate, current_user=CurrentUser):
     db = get_db()
     now = now_local()
 
@@ -43,10 +44,10 @@ async def add_writing_error(payload: WritingErrorCreate):
         }
     )
 
-    existing = await db.writing_errors.find_one({"key": key})
+    existing = await db.writing_errors.find_one({"key": key, "userId": current_user["_id"]})
     if existing:
         await db.writing_errors.update_one(
-            {"_id": existing["_id"]},
+            {"_id": existing["_id"], "userId": current_user["_id"]},
             {
                 "$set": {
                     "notes": payload.notes,
@@ -56,10 +57,11 @@ async def add_writing_error(payload: WritingErrorCreate):
                 "$inc": {"count": 1},
             },
         )
-        updated = await db.writing_errors.find_one({"_id": existing["_id"]})
+        updated = await db.writing_errors.find_one({"_id": existing["_id"], "userId": current_user["_id"]})
         return _to_out(updated)
 
     doc = {
+        "userId": current_user["_id"],
         "key": key,
         "sentence": payload.sentence.strip(),
         "correctedSentence": payload.correctedSentence.strip(),
@@ -71,7 +73,7 @@ async def add_writing_error(payload: WritingErrorCreate):
         "updatedAt": now,
     }
     result = await db.writing_errors.insert_one(doc)
-    created = await db.writing_errors.find_one({"_id": result.inserted_id})
+    created = await db.writing_errors.find_one({"_id": result.inserted_id, "userId": current_user["_id"]})
     return _to_out(created)
 
 
@@ -81,9 +83,10 @@ async def list_writing_errors(
     topic: str | None = None,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=200),
+    current_user=CurrentUser,
 ):
     db = get_db()
-    query: dict[str, Any] = {}
+    query: dict[str, Any] = {"userId": current_user["_id"]}
     if category:
         query["category"] = category
     if topic:
@@ -95,9 +98,9 @@ async def list_writing_errors(
 
 
 @router.get("/error-bank/deck", response_model=WritingDeckResponse)
-async def get_writing_error_deck(limit: int = Query(default=10, ge=1, le=100)):
+async def get_writing_error_deck(limit: int = Query(default=10, ge=1, le=100), current_user=CurrentUser):
     db = get_db()
-    docs = await db.writing_errors.find({}).sort([("count", -1), ("updatedAt", -1)]).limit(limit).to_list(length=limit)
+    docs = await db.writing_errors.find({"userId": current_user["_id"]}).sort([("count", -1), ("updatedAt", -1)]).limit(limit).to_list(length=limit)
     items = [
         WritingDeckItem(
             id=str(doc["_id"]),
@@ -111,11 +114,11 @@ async def get_writing_error_deck(limit: int = Query(default=10, ge=1, le=100)):
 
 
 @router.delete("/error-bank/{error_id}")
-async def delete_writing_error(error_id: str):
+async def delete_writing_error(error_id: str, current_user=CurrentUser):
     if not ObjectId.is_valid(error_id):
         raise HTTPException(status_code=400, detail="Invalid ObjectId")
     db = get_db()
-    result = await db.writing_errors.delete_one({"_id": ObjectId(error_id)})
+    result = await db.writing_errors.delete_one({"_id": ObjectId(error_id), "userId": current_user["_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Error item not found")
     return {"deleted": True}

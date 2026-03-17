@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.db import get_db
 from app.models.review import ReviewCreate, ReviewResponse
+from app.services.auth import CurrentUser
 from app.models.vocab import vocab_doc_to_out
 from app.services.srs_sm2 import Sm2State, apply_review
 from app.services.typing_judge import is_near_correct
@@ -12,14 +13,14 @@ router = APIRouter(prefix="/review", tags=["review"])
 
 
 @router.post("", response_model=ReviewResponse)
-async def submit_review(payload: ReviewCreate):
+async def submit_review(payload: ReviewCreate, current_user=CurrentUser):
     db = get_db()
 
     if not ObjectId.is_valid(payload.vocabId):
         raise HTTPException(status_code=400, detail="Invalid ObjectId")
 
     vocab_id = ObjectId(payload.vocabId)
-    vocab = await db.vocabs.find_one({"_id": vocab_id})
+    vocab = await db.vocabs.find_one({"_id": vocab_id, "userId": current_user["_id"]})
     if not vocab:
         raise HTTPException(status_code=404, detail="Vocab not found")
 
@@ -34,6 +35,7 @@ async def submit_review(payload: ReviewCreate):
     now = now_local()
     await db.review_logs.insert_one(
         {
+            "userId": current_user["_id"],
             "vocabId": vocab_id,
             "mode": payload.mode,
             "questionType": payload.questionType,
@@ -45,9 +47,9 @@ async def submit_review(payload: ReviewCreate):
     )
 
     sm2_update = apply_review(Sm2State.from_doc(vocab), payload.grade, now)
-    await db.vocabs.update_one({"_id": vocab_id}, {"$set": {**sm2_update, "updatedAt": now}})
+    await db.vocabs.update_one({"_id": vocab_id, "userId": current_user["_id"]}, {"$set": {**sm2_update, "updatedAt": now}})
 
-    updated = await db.vocabs.find_one({"_id": vocab_id})
+    updated = await db.vocabs.find_one({"_id": vocab_id, "userId": current_user["_id"]})
     return {
         "vocab": vocab_doc_to_out(updated).model_dump(),
         "nextDueAt": updated["dueAt"],

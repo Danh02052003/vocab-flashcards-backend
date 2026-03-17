@@ -7,6 +7,7 @@ from app.config import validate_mongo_settings
 from app.db import create_indexes, ping_db
 from app.routes.analytics import router as analytics_router
 from app.routes.ai import router as ai_router
+from app.routes.auth import router as auth_router
 from app.routes.packs import router as packs_router
 from app.routes.practice import router as practice_router
 from app.routes.review import router as review_router
@@ -46,6 +47,7 @@ app.add_middleware(
 )
 
 app.include_router(vocab_router)
+app.include_router(auth_router)
 app.include_router(review_router)
 app.include_router(session_router)
 app.include_router(ai_router)
