@@ -48,6 +48,7 @@ async def create_indexes() -> None:
 
     await db.users.create_index([("emailNormalized", ASCENDING)], unique=True, name="uq_users_email_normalized")
     await db.user_sessions.create_index([("tokenHash", ASCENDING)], unique=True, name="uq_user_sessions_token_hash")
+    await db.user_stats.create_index([("userId", ASCENDING)], unique=True, name="uq_user_stats_user")
 
     await db.vocabs.create_index([("userId", ASCENDING), ("termNormalized", ASCENDING)], unique=True, name="uq_vocabs_user_term_normalized")
     await db.vocabs.create_index([("userId", ASCENDING), ("dueAt", ASCENDING)], name="idx_vocabs_user_due_at")

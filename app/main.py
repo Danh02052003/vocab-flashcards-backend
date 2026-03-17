@@ -13,6 +13,7 @@ from app.routes.practice import router as practice_router
 from app.routes.review import router as review_router
 from app.routes.session import router as session_router
 from app.routes.sync import router as sync_router
+from app.routes.stats import router as stats_router
 from app.routes.vocab import router as vocab_router
 from app.routes.writing import router as writing_router
 
@@ -52,6 +53,7 @@ app.include_router(review_router)
 app.include_router(session_router)
 app.include_router(ai_router)
 app.include_router(sync_router)
+app.include_router(stats_router)
 app.include_router(practice_router)
 app.include_router(writing_router)
 app.include_router(packs_router)
