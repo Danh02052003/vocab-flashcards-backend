@@ -62,11 +62,42 @@ class StubAiProvider(BaseAiProvider):
         return data
 
     async def judge_equivalence(self, *, term: str, user_answer: str, meanings: list[str]) -> dict[str, Any]:
-        answer = user_answer.strip().lower()
+        raw_answer = user_answer.strip()
+        answer = raw_answer.lower()
         equivalent = any(answer and answer in meaning.lower() for meaning in meanings if meaning)
+        words = [item for item in raw_answer.split() if item]
+        issues: list[dict[str, str]] = []
+
+        if term.lower() not in answer:
+            issues.append(
+                {
+                    "area": "word use",
+                    "problem": f'The sentence does not include the target word "{term}".',
+                    "fix": f'Use "{term}" directly in the sentence.',
+                }
+            )
+        if len(words) < 5:
+            issues.append(
+                {
+                    "area": "sentence length",
+                    "problem": "The sentence is too short to show clear meaning.",
+                    "fix": "Write a fuller sentence with at least 5 words.",
+                }
+            )
+        if not equivalent and term.lower() in answer:
+            issues.append(
+                {
+                    "area": "meaning",
+                    "problem": f'The sentence does not clearly show the meaning of "{term}".',
+                    "fix": "Rewrite the sentence so the target word matches its intended meaning more clearly.",
+                }
+            )
+
         return {
             "isEquivalent": equivalent,
-            "reasonShort": "stub semantic check",
+            "reasonShort": "stub sentence check",
+            "issues": issues,
+            "suggestedSentence": f"{term.capitalize()} is used correctly in this example sentence.",
         }
 
     async def validate_entry(self, *, term: str, meanings: list[str]) -> dict[str, Any]:
@@ -149,20 +180,31 @@ class OpenAiProvider(BaseAiProvider):
 
     async def judge_equivalence(self, *, term: str, user_answer: str, meanings: list[str]) -> dict[str, Any]:
         prompt = (
-            "Return JSON only in format {isEquivalent:boolean, reasonShort:string}. "
-            f"term={term}; userAnswer={user_answer}; referenceMeanings={meanings}."
+            "Return JSON only. "
+            "Format: "
+            "{\"isEquivalent\":boolean,"
+            "\"reasonShort\":string,"
+            "\"issues\":[{\"area\":string,\"problem\":string,\"fix\":string}],"
+            "\"suggestedSentence\":string}. "
+            f"TargetWord={term}; UserAnswer={user_answer}; ReferenceMeanings={meanings}. "
+            "If UserAnswer is a full sentence, check meaning fit, grammar, word choice, and sentence structure. "
+            "Keep feedback short and specific. "
+            "Only list concrete mistakes that actually exist. "
+            "If the answer is correct, return an empty issues array and still provide a natural suggestedSentence."
         )
         payload = {
             "model": "gpt-4.1-mini",
             "input": prompt,
             "temperature": 0,
-            "max_output_tokens": 120,
+            "max_output_tokens": 260,
         }
         response_data = await self._call_responses_api(payload)
         parsed = _extract_json_dict(response_data)
         return {
             "isEquivalent": bool(parsed.get("isEquivalent", False)),
             "reasonShort": str(parsed.get("reasonShort") or "openai semantic check"),
+            "issues": _normalize_issue_list(parsed.get("issues")),
+            "suggestedSentence": str(parsed.get("suggestedSentence") or "").strip(),
         }
 
     async def validate_entry(self, *, term: str, meanings: list[str]) -> dict[str, Any]:
@@ -286,6 +328,29 @@ def _normalize_examples(value: Any, term: str) -> list[dict[str, str]]:
 def _normalize_ipa(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _normalize_issue_list(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+
+    issues: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        area = str(item.get("area") or "").strip()
+        problem = str(item.get("problem") or "").strip()
+        fix = str(item.get("fix") or "").strip()
+        if not area and not problem and not fix:
+            continue
+        issues.append(
+            {
+                "area": area or "feedback",
+                "problem": problem,
+                "fix": fix,
+            }
+        )
+    return issues
 
 
 def _extract_json_dict(response_data: dict[str, Any]) -> dict[str, Any]:

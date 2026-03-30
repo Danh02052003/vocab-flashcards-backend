@@ -42,6 +42,29 @@ def _unique_strings(values: list[str] | None) -> list[str]:
     return out
 
 
+def _normalize_issue_payload(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+
+    issues: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        area = str(item.get("area") or "").strip()
+        problem = str(item.get("problem") or "").strip()
+        fix = str(item.get("fix") or "").strip()
+        if not area and not problem and not fix:
+            continue
+        issues.append(
+            {
+                "area": area or "feedback",
+                "problem": problem,
+                "fix": fix,
+            }
+        )
+    return issues
+
+
 def _extract_examples(vocab_doc: dict[str, Any] | None, cache_data: dict[str, Any]) -> list[dict[str, str]]:
     examples: list[dict[str, str]] = []
 
@@ -230,7 +253,12 @@ async def judge_equivalence(payload: JudgeRequest, current_user=CurrentUser):
     cache_key = f"judge:{CACHE_VERSION}:{term_normalized}:{content_hash}"
 
     if is_near_correct(payload.userAnswer, meanings):
-        judge_data = {"isEquivalent": True, "reasonShort": "fuzzy match"}
+        judge_data = {
+            "isEquivalent": True,
+            "reasonShort": "fuzzy match",
+            "issues": [],
+            "suggestedSentence": "",
+        }
         await upsert_cache(
             key=cache_key,
             term_normalized=term_normalized,
@@ -247,6 +275,8 @@ async def judge_equivalence(payload: JudgeRequest, current_user=CurrentUser):
         return {
             "isEquivalent": True,
             "reasonShort": "fuzzy match",
+            "issues": [],
+            "suggestedSentence": "",
             "provider": "fuzzy",
             "cached": False,
         }
@@ -264,6 +294,8 @@ async def judge_equivalence(payload: JudgeRequest, current_user=CurrentUser):
         return {
             "isEquivalent": bool(judge_data.get("isEquivalent", False)),
             "reasonShort": str(judge_data.get("reasonShort") or "cached"),
+            "issues": _normalize_issue_payload(judge_data.get("issues")),
+            "suggestedSentence": str(judge_data.get("suggestedSentence") or "").strip(),
             "provider": cache_doc.get("provider", "stub"),
             "cached": True,
         }
@@ -304,6 +336,8 @@ async def judge_equivalence(payload: JudgeRequest, current_user=CurrentUser):
     return {
         "isEquivalent": bool(judge_data.get("isEquivalent", False)),
         "reasonShort": str(judge_data.get("reasonShort") or "ai semantic check"),
+        "issues": _normalize_issue_payload(judge_data.get("issues")),
+        "suggestedSentence": str(judge_data.get("suggestedSentence") or "").strip(),
         "provider": provider_used,
         "cached": False,
     }
