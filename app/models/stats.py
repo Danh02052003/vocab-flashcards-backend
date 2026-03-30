@@ -11,8 +11,10 @@ class UserStatsOut(BaseModel):
     dailyNewCreatedDate: str
     dailyStudyLockCompletedCount: int
     dailyStudyLockCompletedDate: str
+    dailyStudyLockVocabIds: list[str]
     studyLockTargetPerDay: int
     studyLockIntervalMinutes: int
+    studyLockRepeatEnabled: bool
 
 
 class ReviewCompletedRequest(BaseModel):
@@ -26,9 +28,10 @@ class VocabCreatedRequest(BaseModel):
 
 class StudyLockCompletedRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=1000)
+    vocabId: str | None = None
 
 
 class StudySettingsRequest(BaseModel):
     studyLockTargetPerDay: int = Field(default=5, ge=1, le=100)
     studyLockIntervalMinutes: int = Field(default=45, ge=5, le=240)
-
+    studyLockRepeatEnabled: bool = False

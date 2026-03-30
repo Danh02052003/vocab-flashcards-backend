@@ -32,8 +32,10 @@ def _default_stats() -> dict[str, Any]:
         "dailyNewCreatedDate": today,
         "dailyStudyLockCompletedCount": 0,
         "dailyStudyLockCompletedDate": today,
+        "dailyStudyLockVocabIds": [],
         "studyLockTargetPerDay": 5,
         "studyLockIntervalMinutes": 45,
+        "studyLockRepeatEnabled": False,
     }
 
 
@@ -75,8 +77,10 @@ def _to_out(doc: dict[str, Any]) -> UserStatsOut:
         dailyNewCreatedDate=str(doc.get("dailyNewCreatedDate") or ""),
         dailyStudyLockCompletedCount=int(doc.get("dailyStudyLockCompletedCount", 0)),
         dailyStudyLockCompletedDate=str(doc.get("dailyStudyLockCompletedDate") or ""),
+        dailyStudyLockVocabIds=[str(item) for item in (doc.get("dailyStudyLockVocabIds") or []) if item],
         studyLockTargetPerDay=int(doc.get("studyLockTargetPerDay", 5)),
         studyLockIntervalMinutes=int(doc.get("studyLockIntervalMinutes", 45)),
+        studyLockRepeatEnabled=bool(doc.get("studyLockRepeatEnabled", False)),
     )
 
 
@@ -89,6 +93,7 @@ def _roll_daily_counters(stats: dict[str, Any]) -> dict[str, Any]:
     if str(next_stats.get("dailyStudyLockCompletedDate") or "") != today:
         next_stats["dailyStudyLockCompletedDate"] = today
         next_stats["dailyStudyLockCompletedCount"] = 0
+        next_stats["dailyStudyLockVocabIds"] = []
     return next_stats
 
 
@@ -145,6 +150,10 @@ async def study_lock_completed(payload: StudyLockCompletedRequest, current_user=
     stats = _roll_daily_counters(stats)
     next_count = int(stats.get("dailyStudyLockCompletedCount", 0)) + payload.count
     stats["dailyStudyLockCompletedCount"] = next_count
+    existing_ids = [str(item) for item in (stats.get("dailyStudyLockVocabIds") or []) if item]
+    if payload.vocabId and payload.vocabId not in existing_ids:
+        existing_ids.append(payload.vocabId)
+    stats["dailyStudyLockVocabIds"] = existing_ids
     if next_count >= int(stats.get("studyLockTargetPerDay", 5)):
         stats = _apply_streak(stats)
     stats = await _save_stats(current_user["_id"], {k: v for k, v in stats.items() if k not in {"_id", "userId", "createdAt", "updatedAt"}})
@@ -160,7 +169,7 @@ async def update_settings(payload: StudySettingsRequest, current_user=CurrentUse
             **{k: v for k, v in stats.items() if k not in {"_id", "userId", "createdAt", "updatedAt"}},
             "studyLockTargetPerDay": payload.studyLockTargetPerDay,
             "studyLockIntervalMinutes": payload.studyLockIntervalMinutes,
+            "studyLockRepeatEnabled": payload.studyLockRepeatEnabled,
         },
     )
     return _to_out(stats)
-
